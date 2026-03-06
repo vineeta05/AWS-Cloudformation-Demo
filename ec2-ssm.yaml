@@ -4,6 +4,7 @@ Description: >
   AWS Systems Manager (SSM) Session Manager. An IAM role with the
   AmazonSSMManagedInstanceCore managed policy is created and attached
   to the instance through an instance profile.
+  Supports both Public Subnet (with public IP) and Private Subnet (with VPC Endpoints).
 
 Parameters:
   InstanceType:
@@ -31,7 +32,22 @@ Parameters:
     Type: AWS::EC2::Subnet::Id
     Description: Subnet in which the EC2 instance will be launched
 
+  AssignPublicIp:
+    Type: String
+    Default: "true"
+    AllowedValues:
+      - "true"
+      - "false"
+    Description: >
+      Set to true if launching in a PUBLIC subnet (instance gets a public IP).
+      Set to false if launching in a PRIVATE subnet (VPC Endpoints will be created instead).
+
+Conditions:
+  IsPublicSubnet: !Equals [!Ref AssignPublicIp, "true"]
+  IsPrivateSubnet: !Equals [!Ref AssignPublicIp, "false"]
+
 Resources:
+
   # --------------------------------------------------------------------------
   # IAM Role that allows the EC2 instance to communicate with SSM
   # --------------------------------------------------------------------------
@@ -90,29 +106,131 @@ Resources:
           Value: !Sub "${AWS::StackName}-EC2SG"
 
   # --------------------------------------------------------------------------
-  # EC2 Instance
+  # Security Group for VPC Endpoints (used only for private subnet)
   # --------------------------------------------------------------------------
-  EC2Instance:
+  VPCEndpointSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Condition: IsPrivateSubnet
+    Properties:
+      GroupDescription: Security group for SSM VPC Endpoints
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          SourceSecurityGroupId: !Ref EC2SecurityGroup
+          Description: Allow HTTPS from EC2 instance to SSM endpoints
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-VPCEndpointSG"
+
+  # --------------------------------------------------------------------------
+  # EC2 Instance — PUBLIC subnet (with public IP assigned)
+  # --------------------------------------------------------------------------
+  EC2InstancePublic:
     Type: AWS::EC2::Instance
+    Condition: IsPublicSubnet
     Properties:
       InstanceType: !Ref InstanceType
       ImageId: !Ref AmiId
-      SubnetId: !Ref SubnetId
       IamInstanceProfile: !Ref EC2InstanceProfile
-      SecurityGroupIds:
-        - !Ref EC2SecurityGroup
+      NetworkInterfaces:
+        - AssociatePublicIpAddress: true      # ← Ensures public IP is assigned
+          DeviceIndex: "0"
+          SubnetId: !Ref SubnetId
+          GroupSet:
+            - !Ref EC2SecurityGroup
       Tags:
         - Key: Name
           Value: !Sub "${AWS::StackName}-EC2"
 
+  # --------------------------------------------------------------------------
+  # EC2 Instance — PRIVATE subnet (no public IP, uses VPC Endpoints)
+  # --------------------------------------------------------------------------
+  EC2InstancePrivate:
+    Type: AWS::EC2::Instance
+    Condition: IsPrivateSubnet
+    Properties:
+      InstanceType: !Ref InstanceType
+      ImageId: !Ref AmiId
+      IamInstanceProfile: !Ref EC2InstanceProfile
+      NetworkInterfaces:
+        - AssociatePublicIpAddress: false     # ← No public IP for private subnet
+          DeviceIndex: "0"
+          SubnetId: !Ref SubnetId
+          GroupSet:
+            - !Ref EC2SecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-EC2"
+
+  # --------------------------------------------------------------------------
+  # VPC Endpoints for SSM — only created for PRIVATE subnet deployments
+  # These 3 endpoints allow SSM to work without internet/public IP
+  # --------------------------------------------------------------------------
+  SSMEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Condition: IsPrivateSubnet
+    Properties:
+      VpcId: !Ref VpcId
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.ssm"
+      VpcEndpointType: Interface
+      SubnetIds:
+        - !Ref SubnetId
+      SecurityGroupIds:
+        - !Ref VPCEndpointSecurityGroup
+      PrivateDnsEnabled: true
+
+  SSMMessagesEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Condition: IsPrivateSubnet
+    Properties:
+      VpcId: !Ref VpcId
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.ssmmessages"
+      VpcEndpointType: Interface
+      SubnetIds:
+        - !Ref SubnetId
+      SecurityGroupIds:
+        - !Ref VPCEndpointSecurityGroup
+      PrivateDnsEnabled: true
+
+  EC2MessagesEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Condition: IsPrivateSubnet
+    Properties:
+      VpcId: !Ref VpcId
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.ec2messages"
+      VpcEndpointType: Interface
+      SubnetIds:
+        - !Ref SubnetId
+      SecurityGroupIds:
+        - !Ref VPCEndpointSecurityGroup
+      PrivateDnsEnabled: true
+
+# ------------------------------------------------------------------------------
+# Outputs
+# ------------------------------------------------------------------------------
 Outputs:
   InstanceId:
     Description: EC2 Instance ID
-    Value: !Ref EC2Instance
+    Value: !If
+      - IsPublicSubnet
+      - !Ref EC2InstancePublic
+      - !Ref EC2InstancePrivate
+
+  PublicIp:
+    Description: Public IP address (only available for public subnet deployments)
+    Condition: IsPublicSubnet
+    Value: !GetAtt EC2InstancePublic.PublicIp
 
   SSMConnectCommand:
     Description: AWS CLI command to start an SSM Session Manager session
-    Value: !Sub "aws ssm start-session --target ${EC2Instance}"
+    Value: !Sub
+      - "aws ssm start-session --target ${InstanceId}"
+      - InstanceId: !If
+          - IsPublicSubnet
+          - !Ref EC2InstancePublic
+          - !Ref EC2InstancePrivate
 
   IAMRoleName:
     Description: Name of the IAM role attached to the EC2 instance
@@ -121,3 +239,10 @@ Outputs:
   InstanceProfileName:
     Description: Name of the IAM instance profile attached to the EC2 instance
     Value: !Ref EC2InstanceProfile
+
+  DeploymentType:
+    Description: Whether this was deployed in a public or private subnet
+    Value: !If
+      - IsPublicSubnet
+      - "Public Subnet - Instance has a public IP"
+      - "Private Subnet - Using VPC Endpoints for SSM"

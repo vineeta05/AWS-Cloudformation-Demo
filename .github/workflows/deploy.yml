@@ -48,7 +48,7 @@ jobs:
       - name: Deploy CloudFormation Stack
         run: |
           aws cloudformation deploy \
-            --template-url https://vineeta-devops-bucket.s3.us-east-1.amazonaws.com/ec2-ssm.yaml \
+            --template-file ec2-ssm.yaml \
             --stack-name vineeta-ssm-ec2-stack \
             --capabilities CAPABILITY_NAMED_IAM \
             --parameter-overrides \

@@ -1,0 +1,71 @@
+name: Deploy CloudFormation Stack to AWS
+
+on:
+  push:
+    branches:
+      - main                        # Triggers when you push to main branch
+    paths:
+      - 'ec2-ssm.yaml'              # Only triggers if this file changes
+
+  workflow_dispatch:                # Allows manual trigger from GitHub Actions tab
+
+permissions:
+  id-token: write                   # Required for OIDC authentication with AWS
+  contents: read                    # Required to read repo contents
+
+jobs:
+  deploy:
+    name: Upload to S3 and Deploy CloudFormation
+    runs-on: ubuntu-latest
+
+    steps:
+      # -----------------------------------------------------------------------
+      # Step 1 - Checkout the repository code
+      # -----------------------------------------------------------------------
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      # -----------------------------------------------------------------------
+      # Step 2 - Authenticate to AWS using OIDC (no access keys needed!)
+      # -----------------------------------------------------------------------
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v3
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      # -----------------------------------------------------------------------
+      # Step 3 - Upload CloudFormation template to S3 bucket
+      # -----------------------------------------------------------------------
+      - name: Upload Template to S3
+        run: |
+          aws s3 cp ec2-ssm.yaml s3://vineeta-devops-bucket-2026/ec2-ssm.yaml
+          echo "✅ Template uploaded to S3 successfully"
+
+      # -----------------------------------------------------------------------
+      # Step 4 - Deploy or Update CloudFormation Stack
+      # -----------------------------------------------------------------------
+      - name: Deploy CloudFormation Stack
+        run: |
+          aws cloudformation deploy \
+            --template-url https://vineeta-devops-bucket-2026.s3.us-east-1.amazonaws.com/ec2-ssm.yaml \
+            --stack-name vineeta-ssm-ec2-stack \
+            --capabilities CAPABILITY_NAMED_IAM \
+            --parameter-overrides \
+              AssignPublicIp=true \
+              VpcId=${{ secrets.VPC_ID }} \
+              SubnetId=${{ secrets.SUBNET_ID }} \
+            --region us-east-1
+          echo "✅ CloudFormation stack deployed successfully"
+
+      # -----------------------------------------------------------------------
+      # Step 5 - Print the stack outputs (Instance ID + SSM connect command)
+      # -----------------------------------------------------------------------
+      - name: Get Stack Outputs
+        run: |
+          echo "📋 Stack Outputs:"
+          aws cloudformation describe-stacks \
+            --stack-name vineeta-ssm-ec2-stack \
+            --region us-east-1 \
+            --query "Stacks[0].Outputs" \
+            --output table

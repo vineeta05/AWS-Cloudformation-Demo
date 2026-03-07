@@ -39,7 +39,7 @@ jobs:
       # -----------------------------------------------------------------------
       - name: Upload Template to S3
         run: |
-          aws s3 cp ec2-ssm.yaml s3://vineeta-devops-bucket-2026/ec2-ssm.yaml
+          aws s3 cp ec2-ssm.yaml s3://vineeta-devops-bucket/ec2-ssm.yaml
           echo "✅ Template uploaded to S3 successfully"
 
       # -----------------------------------------------------------------------
@@ -48,7 +48,7 @@ jobs:
       - name: Deploy CloudFormation Stack
         run: |
           aws cloudformation deploy \
-            --template-url https://vineeta-devops-bucket-2026.s3.us-east-1.amazonaws.com/ec2-ssm.yaml \
+            --template-url https://vineeta-devops-bucket.s3.us-east-1.amazonaws.com/ec2-ssm.yaml \
             --stack-name vineeta-ssm-ec2-stack \
             --capabilities CAPABILITY_NAMED_IAM \
             --parameter-overrides \
